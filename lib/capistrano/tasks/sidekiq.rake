@@ -55,7 +55,7 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :reload
         else
           if test("[ -d #{release_path} ]")
-            each_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 quiet_sidekiq(pid_file)
               end
@@ -77,7 +77,7 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :stop
         else
           if test("[ -d #{release_path} ]")
-            each_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 stop_sidekiq(pid_file)
               end
@@ -97,10 +97,11 @@ namespace :sidekiq do
           puts "Not stopping Sidekiq - letting it finish"
         else
           if test("[ -d #{release_path} ]")
-            each_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
-                puts "Removing Sidekiq PID file because we let it finish: #{pid_file}"
-                File.unlink(pid_file)
+                puts "Letting Sidekiq finish: #{pid_file}"
+              else
+                puts "Sidekiq had already shut down: #{pid_file}"
               end
             end
           end
@@ -119,7 +120,7 @@ namespace :sidekiq do
         when :upstart
           sudo :service, fetch(:upstart_service_name), :start
         else
-          each_process_with_index do |pid_file, idx|
+          each_current_process_with_index do |pid_file, idx|
             unless pid_file_exists?(pid_file) && process_exists?(pid_file)
               start_sidekiq(pid_file, idx)
             end
@@ -139,7 +140,7 @@ namespace :sidekiq do
   task :rolling_restart do
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_process_with_index(reverse: true) do |pid_file, idx|
+        each_old_process_with_index(reverse: true) do |pid_file, idx|
           if pid_file_exists?(pid_file) && process_exists?(pid_file)
             stop_sidekiq(pid_file)
           end
@@ -153,7 +154,7 @@ namespace :sidekiq do
   task :cleanup do
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_process_with_index do |pid_file, _idx|
+        each_old_process_with_index do |pid_file, _idx|
           unless process_exists?(pid_file)
             next unless pid_file_exists?(pid_file)
             execute "rm #{pid_file}"
@@ -169,7 +170,7 @@ namespace :sidekiq do
     invoke 'sidekiq:cleanup'
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_process_with_index do |pid_file, idx|
+        each_current_process_with_index do |pid_file, idx|
           start_sidekiq(pid_file, idx) unless pid_file_exists?(pid_file)
         end
       end
@@ -200,8 +201,18 @@ namespace :sidekiq do
     end
   end
 
-  def each_process_with_index(reverse: false)
-    pid_file_list = pid_files
+  def each_old_process_with_index(reverse: false)
+    pid_file_list = pid_files(fetch(:latest_release))
+    pid_file_list.reverse! if reverse
+    pid_file_list.each_with_index do |pid_file, idx|
+      within release_path do
+        yield(pid_file, idx)
+      end
+    end
+  end
+
+  def each_current_process_with_index(reverse: false)
+    pid_file_list = pid_files(fetch(:release_timestamp))
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
@@ -233,12 +244,12 @@ namespace :sidekiq do
     execute :systemctl, "--user", "daemon-reload"
   end
 
-  def pid_files
+  def pid_files(version)
     sidekiq_roles = Array(fetch(:sidekiq_roles)).dup
     sidekiq_roles.select! { |role| host.roles.include?(role) }
     sidekiq_roles.flat_map do |role|
       processes = fetch(:"#{ role }_processes") || fetch(:sidekiq_processes)
-      Array.new(processes) { |idx| fetch(:sidekiq_pid).gsub(/\.pid$/, "-#{idx}.pid") }
+      Array.new(processes) { |idx| fetch(:sidekiq_pid).gsub(/\.pid$/, "-#{version}-#{idx}.pid") }
     end
   end
 
