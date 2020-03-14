@@ -100,6 +100,7 @@ namespace :sidekiq do
             each_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 puts "Removing Sidekiq PID file because we let it finish: #{pid_file}"
+                File.unlink(pid_file)
               end
             end
           end
