@@ -29,6 +29,7 @@ namespace :deploy do
     set :deployed_version, fetch(:latest_release)
     set :current_version, fetch(:release_timestamp)
 
+    puts "CURRENT REVISION: #{fetch(:current_revision)}"
     puts "LATEST RELEASE: #{fetch(:latest_release)}"
     puts "RELEASE TIMESTAMP: #{fetch(:release_timestamp)}"
     puts "DEPLOYED VERSION: #{fetch(:deployed_version)}"
@@ -211,8 +212,9 @@ namespace :sidekiq do
 
   def each_old_process_with_index(reverse: false)
     puts "EACH OLD PROCESS WITH INDEX"
-    puts "DEPLOYED VERSION: #{fetch(:deployed_version)}"
-    puts "NEW VERSION: #{fetch(:current_version)}"
+    puts "CURRENT REVISION: #{fetch(:current_revision)}"
+    puts "DEPLOYED VERSION: #{deployed_version}"
+    puts "NEW VERSION: #{current_version}"
 
     pid_file_list = pid_files(deployed_version)
     pid_file_list.reverse! if reverse
@@ -225,6 +227,7 @@ namespace :sidekiq do
 
   def each_current_process_with_index(reverse: false)
     puts "EACH CURRENT PROCESS WITH INDEX"
+    puts "CURRENT REVISION: #{fetch(:current_revision)}"
     puts "DEPLOYED VERSION: #{deployed_version}"
     puts "NEW VERSION: #{current_version}"
 
