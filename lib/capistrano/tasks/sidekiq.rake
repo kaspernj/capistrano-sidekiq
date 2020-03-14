@@ -25,10 +25,15 @@ namespace :load do
 end
 
 namespace :deploy do
-  set :deployed_version, fetch(:latest_release)
-  set :current_version, fetch(:release_timestamp)
-
   before :starting, :check_sidekiq_hooks do
+    set :deployed_version, fetch(:latest_release)
+    set :current_version, fetch(:release_timestamp)
+
+    puts "LATEST RELEASE: #{fetch(:latest_release)}"
+    puts "RELEASE TIMESTAMP: #{fetch(:release_timestamp)}"
+    puts "DEPLOYED VERSION: #{fetch(:deployed_version)}"
+    puts "CURRENT VERSION: #{fetch(:current_version)}"
+
     invoke 'sidekiq:add_default_hooks' if fetch(:sidekiq_default_hooks)
   end
 end
@@ -220,8 +225,8 @@ namespace :sidekiq do
 
   def each_current_process_with_index(reverse: false)
     puts "EACH CURRENT PROCESS WITH INDEX"
-    puts "DEPLOYED VERSION: #{fetch(:deployed_version)}"
-    puts "NEW VERSION: #{fetch(:current_version)}"
+    puts "DEPLOYED VERSION: #{deployed_version}"
+    puts "NEW VERSION: #{current_version}"
 
     pid_file_list = pid_files(new_version)
     pid_file_list.reverse! if reverse
