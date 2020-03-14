@@ -228,7 +228,7 @@ namespace :sidekiq do
     puts "DEPLOYED VERSION: #{deployed_version}"
     puts "NEW VERSION: #{current_version}"
 
-    pid_file_list = pid_files(new_version)
+    pid_file_list = pid_files(current_version)
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
@@ -241,8 +241,8 @@ namespace :sidekiq do
     @deployed_version ||= fetch(:deployed_version) || fetch(:release_timestamp)
   end
 
-  def new_version
-    @new_version ||= fetch(:current_version) || fetch(:release_timestamp)
+  def current_version
+    @current_version ||= fetch(:current_version) || fetch(:release_timestamp)
   end
 
   def fetch_systemd_unit_path
