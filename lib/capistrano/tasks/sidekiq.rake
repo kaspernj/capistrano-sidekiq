@@ -26,15 +26,6 @@ end
 
 namespace :deploy do
   before :starting, :check_sidekiq_hooks do
-    set :deployed_version, fetch(:latest_release)
-    set :current_version, fetch(:release_timestamp)
-
-    puts "CURRENT REVISION: #{fetch(:current_revision)}"
-    puts "LATEST RELEASE: #{fetch(:latest_release)}"
-    puts "RELEASE TIMESTAMP: #{fetch(:release_timestamp)}"
-    puts "DEPLOYED VERSION: #{fetch(:deployed_version)}"
-    puts "CURRENT VERSION: #{fetch(:current_version)}"
-
     invoke 'sidekiq:add_default_hooks' if fetch(:sidekiq_default_hooks)
   end
 end
@@ -64,9 +55,12 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :reload
         else
           if test("[ -d #{release_path} ]")
-            each_old_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_and_new_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
+                puts "Quit Sidekiq on PID file: #{pid_file}"
                 quiet_sidekiq(pid_file)
+              else
+                puts "Couldnt quit Sidekiq because it wasnt running on PID file: #{pid_file}"
               end
             end
           end
@@ -86,7 +80,7 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :stop
         else
           if test("[ -d #{release_path} ]")
-            each_old_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_and_new_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 stop_sidekiq(pid_file)
               end
@@ -106,7 +100,7 @@ namespace :sidekiq do
           puts "Not stopping Sidekiq - letting it finish"
         else
           if test("[ -d #{release_path} ]")
-            each_old_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_and_new_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 puts "Letting Sidekiq finish: #{pid_file}"
               else
@@ -130,8 +124,11 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :start
         else
           each_current_process_with_index do |pid_file, idx|
-            unless pid_file_exists?(pid_file) && process_exists?(pid_file)
+            if !pid_file_exists?(pid_file) || !process_exists?(pid_file)
+              puts "Starting Sidekiq on PID file: #{pid_file}"
               start_sidekiq(pid_file, idx)
+            else
+              puts "Dont start Sidekiq - process is already running on PID file: #{pid_file}"
             end
           end
         end
@@ -149,7 +146,7 @@ namespace :sidekiq do
   task :rolling_restart do
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_old_process_with_index(reverse: true) do |pid_file, idx|
+        each_old_and_new_process_with_index(reverse: true) do |pid_file, idx|
           if pid_file_exists?(pid_file) && process_exists?(pid_file)
             stop_sidekiq(pid_file)
           end
@@ -163,7 +160,7 @@ namespace :sidekiq do
   task :cleanup do
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_old_process_with_index do |pid_file, _idx|
+        each_old_and_new_process_with_index do |pid_file, _idx|
           unless process_exists?(pid_file)
             next unless pid_file_exists?(pid_file)
             execute "rm #{pid_file}"
@@ -210,13 +207,13 @@ namespace :sidekiq do
     end
   end
 
-  def each_old_process_with_index(reverse: false)
-    puts "EACH OLD PROCESS WITH INDEX"
-    puts "CURRENT REVISION: #{fetch(:current_revision)}"
-    puts "DEPLOYED VERSION: #{deployed_version}"
-    puts "NEW VERSION: #{current_version}"
+  # Yields both new and old possible pid-files
+  def each_old_and_new_process_with_index(reverse: false)
+    pid_file_list = []
+    previous_release_versions.each do |release_version|
+      pid_file_list += pid_files(release_version)
+    end
 
-    pid_file_list = pid_files(deployed_version)
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
@@ -225,13 +222,9 @@ namespace :sidekiq do
     end
   end
 
+  # Yields only the pid-files for the current release timestamp
   def each_current_process_with_index(reverse: false)
-    puts "EACH CURRENT PROCESS WITH INDEX"
-    puts "CURRENT REVISION: #{fetch(:current_revision)}"
-    puts "DEPLOYED VERSION: #{deployed_version}"
-    puts "NEW VERSION: #{current_version}"
-
-    pid_file_list = pid_files(current_version)
+    pid_file_list = pid_files(fetch(:release_timestamp))
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
@@ -240,12 +233,13 @@ namespace :sidekiq do
     end
   end
 
-  def deployed_version
-    @deployed_version ||= fetch(:deployed_version) || fetch(:release_timestamp)
-  end
+  # Returns a list of all releases including the current release timestamp (if set)
+  def previous_release_versions
+    current_release_timestamp = fetch(:release_timestamp)
 
-  def current_version
-    @current_version ||= fetch(:current_version) || fetch(:release_timestamp)
+    releases = capture(:ls, "-x", releases_path).split
+    releases << current_release_timestamp.to_s if current_release_timestamp
+    releases.uniq
   end
 
   def fetch_systemd_unit_path
