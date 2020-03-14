@@ -25,6 +25,9 @@ namespace :load do
 end
 
 namespace :deploy do
+  set :deployed_version, fetch(:latest_release)
+  set :new_version, fetch(:release_timestamp)
+
   before :starting, :check_sidekiq_hooks do
     invoke 'sidekiq:add_default_hooks' if fetch(:sidekiq_default_hooks)
   end
@@ -202,7 +205,7 @@ namespace :sidekiq do
   end
 
   def each_old_process_with_index(reverse: false)
-    pid_file_list = pid_files(fetch(:latest_release))
+    pid_file_list = pid_files(deployed_version)
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
@@ -212,13 +215,21 @@ namespace :sidekiq do
   end
 
   def each_current_process_with_index(reverse: false)
-    pid_file_list = pid_files(fetch(:release_timestamp))
+    pid_file_list = pid_files(new_version)
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
         yield(pid_file, idx)
       end
     end
+  end
+
+  def deployed_version
+    @deployed_version ||= fetch(:deployed_version) || fetch(:release_timestamp)
+  end
+
+  def new_version
+    @new_version ||= fetch(:new_version) || fetch(:release_timestamp)
   end
 
   def fetch_systemd_unit_path
