@@ -32,8 +32,14 @@ end
 
 namespace :sidekiq do
   task :add_default_hooks do
-    after 'deploy:starting',  'sidekiq:quiet'
-    after 'deploy:updated',   'sidekiq:stop'
+    after 'deploy:starting', 'sidekiq:quiet'
+
+    if fetch(:sidekiq_let_finish)
+      after 'deploy:updated', 'sidekiq:let_finish'
+    else
+      after 'deploy:updated', 'sidekiq:stop'
+    end
+
     after 'deploy:published', 'sidekiq:start'
     after 'deploy:failed', 'sidekiq:restart'
   end
@@ -74,6 +80,26 @@ namespace :sidekiq do
             each_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 stop_sidekiq(pid_file)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  desc 'Stop sidekiq (graceful shutdown within timeout, put unfinished tasks back to Redis)'
+  task :let_finish do
+    on roles fetch(:sidekiq_roles) do |role|
+      switch_user(role) do
+        case fetch(:init_system)
+        when :systemd, :upstart
+          puts "Not stopping Sidekiq - letting it finish"
+        else
+          if test("[ -d #{release_path} ]")
+            each_process_with_index(reverse: true) do |pid_file, _idx|
+              if pid_file_exists?(pid_file) && process_exists?(pid_file)
+                puts "Removing Sidekiq PID file because we let it finish: #{pid_file}"
               end
             end
           end
