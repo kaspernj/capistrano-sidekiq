@@ -32,8 +32,14 @@ end
 
 namespace :sidekiq do
   task :add_default_hooks do
-    after 'deploy:starting',  'sidekiq:quiet'
-    after 'deploy:updated',   'sidekiq:stop'
+    after 'deploy:starting', 'sidekiq:quiet'
+
+    if fetch(:sidekiq_let_finish)
+      after 'deploy:updated', 'sidekiq:let_finish'
+    else
+      after 'deploy:updated', 'sidekiq:stop'
+    end
+
     after 'deploy:published', 'sidekiq:start'
     after 'deploy:failed', 'sidekiq:restart'
   end
@@ -49,9 +55,12 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :reload
         else
           if test("[ -d #{release_path} ]")
-            each_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_and_new_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
+                puts "Quit Sidekiq on PID file: #{pid_file}"
                 quiet_sidekiq(pid_file)
+              else
+                puts "Couldnt quit Sidekiq because it wasnt running on PID file: #{pid_file}"
               end
             end
           end
@@ -71,9 +80,31 @@ namespace :sidekiq do
           sudo :service, fetch(:upstart_service_name), :stop
         else
           if test("[ -d #{release_path} ]")
-            each_process_with_index(reverse: true) do |pid_file, _idx|
+            each_old_and_new_process_with_index(reverse: true) do |pid_file, _idx|
               if pid_file_exists?(pid_file) && process_exists?(pid_file)
                 stop_sidekiq(pid_file)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  desc 'Stop sidekiq (graceful shutdown within timeout, put unfinished tasks back to Redis)'
+  task :let_finish do
+    on roles fetch(:sidekiq_roles) do |role|
+      switch_user(role) do
+        case fetch(:init_system)
+        when :systemd, :upstart
+          puts "Not stopping Sidekiq - letting it finish"
+        else
+          if test("[ -d #{release_path} ]")
+            each_old_and_new_process_with_index(reverse: true) do |pid_file, _idx|
+              if pid_file_exists?(pid_file) && process_exists?(pid_file)
+                puts "Letting Sidekiq finish: #{pid_file}"
+              else
+                puts "Sidekiq had already shut down: #{pid_file}"
               end
             end
           end
@@ -92,9 +123,12 @@ namespace :sidekiq do
         when :upstart
           sudo :service, fetch(:upstart_service_name), :start
         else
-          each_process_with_index do |pid_file, idx|
-            unless pid_file_exists?(pid_file) && process_exists?(pid_file)
+          each_current_process_with_index do |pid_file, idx|
+            if !pid_file_exists?(pid_file) || !process_exists?(pid_file)
+              puts "Starting Sidekiq on PID file: #{pid_file}"
               start_sidekiq(pid_file, idx)
+            else
+              puts "Dont start Sidekiq - process is already running on PID file: #{pid_file}"
             end
           end
         end
@@ -112,7 +146,7 @@ namespace :sidekiq do
   task :rolling_restart do
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_process_with_index(reverse: true) do |pid_file, idx|
+        each_old_and_new_process_with_index(reverse: true) do |pid_file, idx|
           if pid_file_exists?(pid_file) && process_exists?(pid_file)
             stop_sidekiq(pid_file)
           end
@@ -126,7 +160,7 @@ namespace :sidekiq do
   task :cleanup do
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_process_with_index do |pid_file, _idx|
+        each_old_and_new_process_with_index do |pid_file, _idx|
           unless process_exists?(pid_file)
             next unless pid_file_exists?(pid_file)
             execute "rm #{pid_file}"
@@ -142,7 +176,7 @@ namespace :sidekiq do
     invoke 'sidekiq:cleanup'
     on roles fetch(:sidekiq_roles) do |role|
       switch_user(role) do
-        each_process_with_index do |pid_file, idx|
+        each_current_process_with_index do |pid_file, idx|
           start_sidekiq(pid_file, idx) unless pid_file_exists?(pid_file)
         end
       end
@@ -173,14 +207,39 @@ namespace :sidekiq do
     end
   end
 
-  def each_process_with_index(reverse: false)
-    pid_file_list = pid_files
+  # Yields both new and old possible pid-files
+  def each_old_and_new_process_with_index(reverse: false)
+    pid_file_list = []
+    previous_release_versions.each do |release_version|
+      pid_file_list += pid_files(release_version)
+    end
+
     pid_file_list.reverse! if reverse
     pid_file_list.each_with_index do |pid_file, idx|
       within release_path do
         yield(pid_file, idx)
       end
     end
+  end
+
+  # Yields only the pid-files for the current release timestamp
+  def each_current_process_with_index(reverse: false)
+    pid_file_list = pid_files(fetch(:release_timestamp))
+    pid_file_list.reverse! if reverse
+    pid_file_list.each_with_index do |pid_file, idx|
+      within release_path do
+        yield(pid_file, idx)
+      end
+    end
+  end
+
+  # Returns a list of all releases including the current release timestamp (if set)
+  def previous_release_versions
+    current_release_timestamp = fetch(:release_timestamp)
+
+    releases = capture(:ls, "-x", releases_path).split
+    releases << current_release_timestamp.to_s if current_release_timestamp
+    releases.uniq
   end
 
   def fetch_systemd_unit_path
@@ -206,12 +265,12 @@ namespace :sidekiq do
     execute :systemctl, "--user", "daemon-reload"
   end
 
-  def pid_files
+  def pid_files(version)
     sidekiq_roles = Array(fetch(:sidekiq_roles)).dup
     sidekiq_roles.select! { |role| host.roles.include?(role) }
     sidekiq_roles.flat_map do |role|
       processes = fetch(:"#{ role }_processes") || fetch(:sidekiq_processes)
-      Array.new(processes) { |idx| fetch(:sidekiq_pid).gsub(/\.pid$/, "-#{idx}.pid") }
+      Array.new(processes) { |idx| fetch(:sidekiq_pid).gsub(/\.pid$/, "-#{version}-#{idx}.pid") }
     end
   end
 
